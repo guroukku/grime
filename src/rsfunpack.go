@@ -121,6 +121,10 @@ func unpack(f *os.File, hdr *Header) {
 func main() {
 	var hdrSize int
 
+	if len(os.Args) == 1 {
+		fmt.Printf("Usage: rsfunpack FILE\n")
+		return
+	}
 	path := os.Args[1]
 
 	f, err := os.Open(path)
