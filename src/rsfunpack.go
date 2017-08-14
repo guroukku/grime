@@ -54,37 +54,68 @@ func readNextBytes(file *os.File, number int) []byte {
 	return bytes
 }
 
-func unpackHeader(file *os.File, hdrSize int) *Header {
-	hdr := Header{}
-	data := readNextBytes(file, hdrSize)
+func getBuffer(f *os.File, n int) *bytes.Buffer {
+	data := readNextBytes(f, n)
 	buffer := bytes.NewBuffer(data)
-	err := binary.Read(buffer, binary.LittleEndian, &hdr)
-	if err != nil {
-		log.Fatal("binary.Read failed", err)
-	}
+	return buffer
+}
 
+func unpackHeader(f *os.File, hdrSize int) *Header {
+	hdr := Header{}
+	err := binary.Read(getBuffer(f, hdrSize), binary.LittleEndian, &hdr)
+	check(err)
 	return &hdr
 }
 
-func getFormatInfo(f *os.File) *FormatInfo {
-	aFormat := FormatInfo{}
-	data := readNextBytes(f, 8)
-	buffer := bytes.NewBuffer(data)
-	err := binary.Read(buffer, binary.LittleEndian, &aFormat)
-	check(err)
-	//fmt.Printf("%s - Count: %d Pos: %d\n", aFormat.Name, aFormat.Count, aFormat.Pos)
-	return &aFormat
-
+func unpackFormatList(f *os.File, hdr *Header) []*FormatInfo {
+	formatList := make([]*FormatInfo, hdr.FormatCount)
+	for i := 0; i < int(hdr.FormatCount); i++ {
+		aFormat := FormatInfo{}
+		err := binary.Read(getBuffer(f, 8), binary.LittleEndian, &aFormat)
+		check(err)
+		formatList[i] = &aFormat
+	}
+	return formatList
 }
 
-func getFileInfo(f *os.File) *FileInfo {
-	aFile := FileInfo{}
-	data := readNextBytes(f, 26)
-	buffer := bytes.NewBuffer(data)
-	err := binary.Read(buffer, binary.LittleEndian, &aFile)
-	check(err)
-	//fmt.Printf("%s - %x - %x %x\n", aFile.Name, aFile.Addr, aFile.Size, aFile.Val1)
-	return &aFile
+func unpackFileList(f *os.File, hdr *Header) []*FileInfo {
+	fileList := make([]*FileInfo, hdr.FileCount)
+	for i := 0; i < int(hdr.FileCount); i++ {
+		aFile := FileInfo{}
+		err := binary.Read(getBuffer(f, 26), binary.LittleEndian, &aFile)
+		check(err)
+		fileList[i] = &aFile
+	}
+	return fileList
+}
+
+func unpackFiles(f *os.File, hdr *Header, formats []*FormatInfo, files []*FileInfo)  {	
+	for i := 0; i < len(formats); i++ {
+		workDir := "./" +  string(bytes.Trim(hdr.Name[:12], "x\000")) + "/" +
+			string(formats[i].Name[:3]) + "/"
+		fmt.Printf("Extracting to %s\n", workDir)
+		os.MkdirAll(workDir, os.ModePerm)
+		fmt.Printf("File count: %d\n", formats[i].Count)
+		for ii := formats[i].Pos; ii < formats[i].Count+formats[i].Pos; ii++ {
+			s := workDir + string(bytes.Trim(files[ii].Name[:12], "x\000"))
+			//fmt.Printf("Writing file: %s\n", s)
+			w, werr := os.Create(s)
+			check(werr)
+			addr := int64(files[ii].Addr)
+			fsize := int(files[ii].Size)
+			f.Seek(addr, 0)
+			wdata := (readNextBytes(f, fsize))
+			_, werr = w.Write(wdata)
+			check(werr)
+			w.Close()
+		}
+	}
+}
+
+func unpack(f *os.File, hdr *Header) {
+	formatList := unpackFormatList(f, hdr)
+	fileList := unpackFileList(f, hdr)
+	unpackFiles(f, hdr, formatList, fileList)
 }
 
 func main() {
@@ -104,9 +135,9 @@ func main() {
 		fmt.Printf("Valid RSF format found\n")
 		hdrSize = 0xb4
 	} else if formatCheck[0] == byte(0x6c) {
-		log.Fatal("Cannot handle DOS RSF format. Quitting.\n")
+		log.Fatal("Cannot handle old-style RSF format\n")
 	} else {
-		log.Fatal("Unknown RSF format\n")
+		log.Fatal("Unknown file format\n")
 	}
 
 	f.Seek(0, 0)
@@ -115,34 +146,5 @@ func main() {
 	fmt.Printf("%s\n%s\n%s\n%s\nFilesize: %d\nFormats: %d Files: %d\n", header.License, header.Name,
 		header.Version, header.Timestamp, header.FileSize, header.FormatCount, header.FileCount)
 
-	formatList := make([]*FormatInfo, header.FormatCount)
-	for i := 0; i < int(header.FormatCount); i++ {
-		formatList[i] = getFormatInfo(f)
-	}
-
-	fileList := make([]*FileInfo, header.FileCount)
-	for i := 0; i < int(header.FileCount); i++ {
-		fileList[i] = getFileInfo(f)
-	}
-
-	for i := 0; i < len(formatList); i++ {
-		workDir := "./" + string(bytes.Trim(header.Name[:12], "x\000")) + "/" +
-			string(formatList[i].Name[:3]) + "/"
-		fmt.Printf("Extracting to %s\n", workDir)
-		os.MkdirAll(workDir, os.ModePerm)
-		fmt.Printf("File count: %d\n", formatList[i].Count)
-		for ii := formatList[i].Pos; ii < formatList[i].Count+formatList[i].Pos; ii++ {
-			s := workDir + string(bytes.Trim(fileList[ii].Name[:12], "x\000"))
-			//fmt.Printf("Writing file: %s\n", s)
-			w, werr := os.Create(s)
-			check(werr)
-			addr := int64(fileList[ii].Addr)
-			fsize := int(fileList[ii].Size)
-			f.Seek(addr, 0)
-			wdata := (readNextBytes(f, fsize))
-			_, werr = w.Write(wdata)
-			check(werr)
-			w.Close()
-		}
-	}
+	unpack(f, header)
 }
