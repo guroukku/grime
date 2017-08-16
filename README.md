@@ -5,5 +5,5 @@ A utility for unpacking resource files (.RSF) for Grimoire: Heralds of the Winge
 Unpacks files from SuperDemo and Release RSFs according to header info.
 
 ##### What doesn't:
-Many files are missing headers (e.g., *.BMP) or encoded in some fashion (e.g., *.TXT).<br>
+Some files have broken headers (e.g., DIC/*.BMP, MPS/*.BMP) or are encoded in some fashion (e.g., *.TXT).<br>
 Can't unpack RSF files from the DOS beta currently.
