@@ -47,10 +47,11 @@ type DirectoryInfo struct {
 
 type FileInfo struct {
 	Name [12]byte
-	_    uint16
+	Val1 uint16 // 0 = Default, 200 = BMP, 1000 = TXT
 	Size uint32
 	Addr uint32
-	Val1 uint32 //unidentified
+	Val2 uint16 //unidentified
+	Val3 uint16 //unidentified
 }
 
 func check(e error) {
@@ -99,6 +100,9 @@ func unpackFileList(f *os.File, cnt int) []*FileInfo {
 		file := FileInfo{}
 		err := binary.Read(getBuffer(f, 26), binary.LittleEndian, &file)
 		check(err)
+
+
+
 		file_list[i] = &file
 	}
 	return file_list
@@ -142,8 +146,7 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 }
 
 func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal *[]byte)  {
-	var buf_a bytes.Buffer
-	var buf_b bytes.Buffer
+	var buf bytes.Buffer
 	
 	for _, dir := range dir_list {
 		work_dir := "./" +  string(bytes.Trim(hdr.Name[:12], "x\000")) + "/" +
@@ -160,15 +163,16 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 	
 			out_data := unpackFile(f, file)
 			
-			if (s[len(s)-3:] == "BMP") {
+			fmt.Printf("Filename: %s\n Val1: %x\n Val2: %x\n Val3: %x\n", file.Name, file.Val1, file.Val2, file.Val3)
+			if (file.Val1 == 0x200) {
 				dim := out_data[:4]
 				bmp_x := binary.LittleEndian.Uint16(dim[:2])
 				bmp_y:= binary.LittleEndian.Uint16(dim[2:])
-				bmp_data := out_data[4:]
+				bmp_data := out_data[13:]
 				bmp_header := BitmapHeader{
 					HeaderField: 0x4d42,
 					Size: uint32(0x316 + file.Size),
-					DataAddress: 0x316 + 0x9,
+					DataAddress: 0x316,
 				}
 				
 				bmp_dib := BitmapDIB{
@@ -179,15 +183,13 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 					Bpp: 0x8,
 				}
 
-				binary.Write(&buf_a, binary.LittleEndian, bmp_header)
-				binary.Write(&buf_b, binary.LittleEndian, bmp_dib)
-				buf_a.Write(buf_b.Next(buf_b.Len()))
-				binary.Write(&buf_b, binary.LittleEndian, bmp_data)
-				buf_a.Write(*pal)
-				buf_a.Write(buf_b.Next(buf_b.Len()))
+				binary.Write(&buf, binary.LittleEndian, bmp_header)
+				binary.Write(&buf, binary.LittleEndian, bmp_dib)
+				buf.Write(*pal)
+				binary.Write(&buf, binary.LittleEndian, bmp_data)
 				
-				bmp_file := make([]byte, buf_a.Len())
-				err = binary.Read(&buf_a, binary.LittleEndian, bmp_file)
+				bmp_file := make([]byte, buf.Len())
+				err = binary.Read(&buf, binary.LittleEndian, bmp_file)
 				check(err)
 				_, err = out.Write(bmp_file)
 				check(err)
