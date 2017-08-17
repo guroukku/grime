@@ -149,7 +149,7 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 	var buf bytes.Buffer
 	
 	for _, dir := range dir_list {
-		work_dir := "./" +  string(bytes.Trim(hdr.Name[:12], "x\000")) + "/" +
+		work_dir := "./" +  string(bytes.Trim(hdr.Name[:8], "x\000")) + "/" +
 			string(dir.Name[:3]) + "/"
 		fmt.Printf("Extracting to %s\n", work_dir)
 		os.MkdirAll(work_dir, os.ModePerm)
