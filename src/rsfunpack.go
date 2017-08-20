@@ -11,12 +11,8 @@ import (
 type BitmapHeader struct {
 	HeaderField uint16
 	Size uint32
-	Res1 uint16
-	Res2 uint16
+	_ uint32
 	DataAddress uint32
-}
-
-type BitmapDIB struct {
 	DIBSize uint32
 	Width uint16
 	Height uint16
@@ -47,17 +43,27 @@ type DirectoryInfo struct {
 
 type FileInfo struct {
 	Name [12]byte
-	Val1 uint16 // 0 = Default, 200 = BMP, 1000 = TXT
+	ID uint16 // 0 = Default, 200 = BMP, 1000 = TXT
 	Size uint32
 	Addr uint32
-	Val2 uint16 //unidentified
-	Val3 uint16 //unidentified
+	Val1 uint8 //unidentified
+	Val2 uint8 //unidentified
+	Val3 uint8 //unidentified
+	Val4 uint8 //unidentified
 }
 
 func check(e error) {
 	if e != nil {
 		log.Fatal(e)
 	}
+}
+
+func insertByte(slice []byte, index uint16, value byte) []byte {
+	s_a := slice[:index]
+	s_b := slice[index:]
+	s_a = append(s_a, value, value)
+	s_a = append(s_a, s_b...)
+	return s_a
 }
 
 func readNumBytes(file *os.File, number int) []byte {
@@ -100,9 +106,6 @@ func unpackFileList(f *os.File, cnt int) []*FileInfo {
 		file := FileInfo{}
 		err := binary.Read(getBuffer(f, 26), binary.LittleEndian, &file)
 		check(err)
-
-
-
 		file_list[i] = &file
 	}
 	return file_list
@@ -117,10 +120,10 @@ func unpackFile(f *os.File, file *FileInfo) []byte {
 	return file_data
 }
 
-func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s string) *[]byte {
+func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s string) []byte {
 	for _, dir := range dir_list {
 		if string(dir.Name[:3]) == "PAL" {
-			fmt.Printf("PAL Format found\n")
+			fmt.Printf("PAL directory found\n")
 			for _, file := range files[dir.Pos:dir.Pos + dir.Count] {
 				file_name := string(bytes.Trim(file.Name[:12], "x\000"))
 				if file_name == s {
@@ -136,7 +139,7 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 							pal[i-2] = buf
 						}
 					}
-					return &pal
+					return pal
 				}
 			}
 		}
@@ -145,7 +148,7 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 	return nil
 }
 
-func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal *[]byte)  {
+func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal []byte)  {
 	var buf bytes.Buffer
 	
 	for _, dir := range dir_list {
@@ -163,29 +166,36 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 	
 			out_data := unpackFile(f, file)
 			
-			fmt.Printf("Filename: %s\n Val1: %x\n Val2: %x\n Val3: %x\n", file.Name, file.Val1, file.Val2, file.Val3)
-			if (file.Val1 == 0x200) {
+			//fmt.Printf("Filename: %s\n ID: %x\n Val1: %x\n Val2: %x\n Val3: %x\n Val4: %x\n",
+			//	file.Name, file.ID, file.Val1, file.Val2, file.Val3, file.Val4)
+			switch file.ID {
+			case 0x200: //Bitmap
 				dim := out_data[:4]
 				bmp_x := binary.LittleEndian.Uint16(dim[:2])
-				bmp_y:= binary.LittleEndian.Uint16(dim[2:])
-				bmp_data := out_data[13:]
+				bmp_y := binary.LittleEndian.Uint16(dim[2:])
+				bmp_data := out_data[6:]
 				bmp_header := BitmapHeader{
 					HeaderField: 0x4d42,
-					Size: uint32(0x316 + file.Size),
-					DataAddress: 0x316,
-				}
-				
-				bmp_dib := BitmapDIB{
+					Size: uint32(0x31D + file.Size),
+					DataAddress: 0x31D,
 					DIBSize: 0x0c,
 					Width: bmp_x,
 					Height: bmp_y,
 					ColPlanes: 0x1,
 					Bpp: 0x8,
 				}
-
+				
+				//Some bitmaps are not 4-byte aligned, so we need to add the padding manually
+				if bmp_x % 4 != 0 {
+					fmt.Printf("File %s requires padding\n", file.Name)
+					row := uint16(bmp_x)
+					for i := row; i < uint16(len(bmp_data)) - row; i += row {
+						bmp_data = insertByte(bmp_data, i, 0)
+					}		
+				}
+				
 				binary.Write(&buf, binary.LittleEndian, bmp_header)
-				binary.Write(&buf, binary.LittleEndian, bmp_dib)
-				buf.Write(*pal)
+				buf.Write(pal)
 				binary.Write(&buf, binary.LittleEndian, bmp_data)
 				
 				bmp_file := make([]byte, buf.Len())
@@ -193,7 +203,8 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 				check(err)
 				_, err = out.Write(bmp_file)
 				check(err)
-			} else {
+
+			default:
 				_, err = out.Write(out_data)
 				check(err)
 			}
