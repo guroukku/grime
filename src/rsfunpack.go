@@ -74,7 +74,7 @@ func check(e error) {
 
 func insertByte(slice []byte, index int, value byte) []byte {
 	s_a := slice[:index+1]
-	s_b := slice[index:]
+	s_b := slice[index+1:]
 	s_a = append(s_a, value)
 	s_a = append(s_a, s_b...)
 	return s_a
@@ -151,7 +151,6 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 							g : pal[1],
 							b : pal[2],
 						}
-						fmt.Printf("%+x\n",pal_entry)
 						palette[i] = &pal_entry
 					}
 					return palette
@@ -171,7 +170,7 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 			string(dir.Name[:3]) + "/"
 		fmt.Printf("Extracting to %s\n", work_dir)
 		os.MkdirAll(work_dir, os.ModePerm)
-		fmt.Printf("File count: %d\n", dir.Count)
+		//fmt.Printf("File count: %d\n", dir.Count)
 
 
 		for _, file := range files[dir.Pos:dir.Count + dir.Pos] {
@@ -202,12 +201,13 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 				
 				//Some bitmaps are not 4-byte aligned, so we need to check and pad them manually
 				row := int(bmp_x)
-				rowPad := -1 * ((row % 4) - 4)
+				rowPad := -(row % 4 - 4)
 				if rowPad != 4 {
-					fmt.Printf("File %s requires %d bytes padding\n", file.Name, rowPad)
-					for i := row + (rowPad); i < len(bmp_data); i += row + rowPad {
-						for ii := 1; ii < rowPad; ii++ {
-							bmp_data = insertByte(bmp_data, i+ii, 0)
+					//fmt.Printf("File %s requires %d bytes padding\n", file.Name, rowPad)
+					bmp_data = bmp_data[rowPad:]
+					for i := rowPad; i < len(bmp_data); i += row + rowPad {
+						for ii := 0; ii < rowPad; ii++ {
+							bmp_data = insertByte(bmp_data, i-1, 0)
 						}
 					}		
 				}
@@ -270,7 +270,7 @@ func main() {
 	f.Seek(0, 0)
 	header := unpackHeader(f, hdrSize)
 
-	fmt.Printf("%s\n%s\n%s\n%s\nFilesize: %d\nFormats: %d Files: %d\n", header.License, header.Name,
+	fmt.Printf("%s\n%s\n%s\n%s\nFilesize: %d\nDirectories: %d Files: %d\n", header.License, header.Name,
 		header.Version, header.Timestamp, header.FileSize, header.DirectoryCount, header.FileCount)
 
 	directory_list := unpackDirectoryList(f, int(header.DirectoryCount))
