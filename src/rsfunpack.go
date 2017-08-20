@@ -200,14 +200,14 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 					Bpp: 0x8,
 				}
 				
-				//Some bitmaps are not 4-byte aligned, so we need to pad them manually
+				//Some bitmaps are not 4-byte aligned, so we need to check and pad them manually
 				row := int(bmp_x)
-				if row % 4 != 0 {
-					fmt.Printf("File %s requires padding\n", file.Name)
-					for i := row; i < len(bmp_data) - row; i += row {
-						fmt.Printf("Row: %d\n", row)
-						for ii := 1; ii < row % 4; ii++ {
-							bmp_data = insertByte(bmp_data, i, 0)
+				rowPad := -1 * ((row % 4) - 4)
+				if rowPad != 4 {
+					fmt.Printf("File %s requires %d bytes padding\n", file.Name, rowPad)
+					for i := row + (rowPad); i < len(bmp_data); i += row + rowPad {
+						for ii := 1; ii < rowPad; ii++ {
+							bmp_data = insertByte(bmp_data, i+ii, 0)
 						}
 					}		
 				}
