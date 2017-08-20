@@ -205,6 +205,7 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 				if row % 4 != 0 {
 					fmt.Printf("File %s requires padding\n", file.Name)
 					for i := row; i < len(bmp_data) - row; i += row {
+						fmt.Printf("Row: %d\n", row)
 						for ii := 1; ii < row % 4; ii++ {
 							bmp_data = insertByte(bmp_data, i, 0)
 						}
