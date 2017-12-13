@@ -34,6 +34,41 @@ type BitmapHeader struct {
 	_ [24]byte
 }
 
+type TextPageHeader struct {
+	Size uint16
+	Start uint16
+}
+
+type TextEntryHeader struct {
+	Size uint16
+	Start uint32
+}
+
+type TextHeader struct {
+	ID uint16
+	EntryCount uint16
+	_ uint16
+	PageCount uint16
+}
+
+//TextHeader IDs:
+//
+//HELP - 0E
+//NPC - 24 to 27
+//GAMETEXT - 29
+//SUPERID - 2D
+//REGO - 35
+//CREDITS - 3C
+//RACEDESC - 3D
+//STORY - 3D
+//ID - 4C
+//LOGFLAGS - 55
+//LOCKHINT - 58
+//DICTION - 62
+//MASTER - 7E
+//SPELLTXT - 01AF
+//NPCCLUE - 030F
+
 type Header struct {
 	License     [100]byte 
 	Name        [12]byte
@@ -42,28 +77,25 @@ type Header struct {
 	FileSize    uint32
 	DirectoryCount uint16
 	FileCount   uint16
-	Val1       [2]byte //unidentified
-	Val2       [2]byte //unidentified
-	Val3       [2]byte //unidentified
-	Val4       [2]byte //unidentified
-	Val5       [2]byte //unidentified
+	Val1       uint16 //unidentified 0x0008
+	Val2       uint16 //unidentified 0x001A
+	Val3       uint16 //unidentified 0x0006
+	Val4       uint16 //unidentified 0x1a64
+	Val5       uint16 //unidentified 0xa26b
 }
 
 type DirectoryInfo struct {
 	Name  [4]byte
 	Count uint16
-	Pos   uint16
+	Addr   uint16
 }
 
 type FileInfo struct {
 	Name [12]byte
 	ID uint16 // 0 = Default, 200 = BMP, 1000 = TXT
 	Size uint32
-	Addr uint32
-	Val1 uint8 //unidentified
-	Val2 uint8 //unidentified
-	Val3 uint8 //unidentified
-	Val4 uint8 //unidentified
+	StartAddr uint32
+	EndAddr uint32 
 }
 
 func check(e error) {
@@ -126,11 +158,10 @@ func unpackFileList(f *os.File, cnt int) []*FileInfo {
 }
 
 func unpackFile(f *os.File, file *FileInfo) []byte {
-	addr := int64(file.Addr)
+	addr := int64(file.StartAddr)
 	fsize := int(file.Size)
 	f.Seek(addr, 0)
 	file_data := readNumBytes(f, fsize)
-	
 	return file_data
 }
 
@@ -138,18 +169,18 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 	for _, dir := range dir_list {
 		if string(dir.Name[:3]) == "PAL" {
 			fmt.Printf("PAL directory found\n")
-			for _, file := range files[dir.Pos:dir.Pos + dir.Count] {
+			for _, file := range files[dir.Addr:dir.Addr + dir.Count] {
 				file_name := string(bytes.Trim(file.Name[:12], "x\000"))
 				if file_name == s {
 					fmt.Printf("Unpacking palette: %s\n", file_name)
 					palette := make([]*RGB, 256)
-					f.Seek(int64(file.Addr), 0)
+					f.Seek(int64(file.StartAddr), 0)
 					for i := 0; i < 256; i++ {
 						pal := readNumBytes(f, 3)
 						pal_entry := RGB{
-							r : pal[0],
+							r : pal[2],
 							g : pal[1],
-							b : pal[2],
+							b : pal[0],
 						}
 						palette[i] = &pal_entry
 					}
@@ -164,24 +195,18 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 
 func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal []*RGB)  {
 	var buf bytes.Buffer
-	
+	fmt.Printf("Extracting to:\n")
 	for _, dir := range dir_list {
-		work_dir := "./" +  string(bytes.Trim(hdr.Name[:8], "x\000")) + "/" +
-			string(dir.Name[:3]) + "/"
-		fmt.Printf("Extracting to %s\n", work_dir)
+		work_dir := fmt.Sprintf("./%s/%s/", bytes.Trim(hdr.Name[:8], "x\000"), dir.Name[:3])
+		fmt.Printf("\t%s\n", work_dir)
 		os.MkdirAll(work_dir, os.ModePerm)
-		//fmt.Printf("File count: %d\n", dir.Count)
 
-
-		for _, file := range files[dir.Pos:dir.Count + dir.Pos] {
+		for _, file := range files[dir.Addr:dir.Count + dir.Addr] {
 			s := work_dir + string(bytes.Trim(file.Name[:12], "x\000"))
 			out, err := os.Create(s)
 			check(err)
-	
 			out_data := unpackFile(f, file)
 			
-			//fmt.Printf("Filename: %s\n ID: %x\n Val1: %x\n Val2: %x\n Val3: %x\n Val4: %x\n",
-			//	file.Name, file.ID, file.Val1, file.Val2, file.Val3, file.Val4)
 			switch file.ID {
 			case 0x200: //Bitmap
 				dim := out_data[:4]
@@ -203,7 +228,6 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 				row := int(bmp_x)
 				rowPad := -(row % 4 - 4)
 				if rowPad != 4 {
-					//fmt.Printf("File %s requires %d bytes padding\n", file.Name, rowPad)
 					bmp_data = bmp_data[rowPad:]
 					for i := rowPad; i < len(bmp_data); i += row + rowPad {
 						for ii := 0; ii < rowPad; ii++ {
@@ -211,28 +235,61 @@ func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*Fi
 						}
 					}		
 				}
-				
 				binary.Write(&buf, binary.LittleEndian, bmp_header)
 				
-				//PAL values are 0x00 - 0x3F, and red/blue channels seem to be swapped
+				//PAL values are 0x00 - 0x3F so must be multiplied by 4
 				for i := 0; i < len(pal); i++ {
 					outpal_entry := RGBA{
-						r : pal[i].b * 4,
+						r : pal[i].r * 4,
 						g : pal[i].g * 4,
-						b : pal[i].r * 4, 
+						b : pal[i].b * 4, 
 					}
 					binary.Write(&buf, binary.LittleEndian, outpal_entry)
 				}
-				
 				binary.Write(&buf, binary.LittleEndian, bmp_data)
-				
 				bmp_file := make([]byte, buf.Len())
 				err = binary.Read(&buf, binary.LittleEndian, bmp_file)
 				check(err)
 				_, err = out.Write(bmp_file)
 				check(err)
 
+			case 0x1000: //TXT file
+				t_hdr := TextHeader{}
+				te_hdr_array := []TextEntryHeader{}
+				
+				err := binary.Read(bytes.NewReader(out_data), binary.LittleEndian, &t_hdr)
+				check(err)
+
+				idx := 8
+				
+				for i := 0; i < int(t_hdr.EntryCount); i++ {
+					te_hdr := TextEntryHeader {
+						Size: binary.LittleEndian.Uint16(out_data[idx:idx+2]),
+						Start: binary.LittleEndian.Uint32(out_data[idx+2:idx+6]),
+					}
+					idx += 6
+					te_hdr_array = append(te_hdr_array, te_hdr)
+				}
+
+				idx += int(t_hdr.PageCount * 8)
+				
+				//Ditch the header data.
+				out_data := out_data[idx:]
+				for i := 0; i < int(t_hdr.EntryCount); i++ {
+					//Each text character is XOR'd with its position.
+					pos := 0
+					for ii := 0; ii < int(te_hdr_array[i].Size); ii++ {
+						pos = ii + int(te_hdr_array[i].Start)
+						out_data[pos] = out_data[pos] ^ byte(ii)
+					}
+				}
+				_, err = out.Write(out_data)
+				check(err)
+			case 0:
+				_, err = out.Write(out_data)
+				check(err)
 			default:
+				fmt.Printf("Unexpected format: %x\n", file.ID)
 				_, err = out.Write(out_data)
 				check(err)
 			}
@@ -254,8 +311,6 @@ func main() {
 	check(err)
 	defer f.Close()
 
-	fmt.Printf("%s opened\n", path)
-
 	formatCheck := readNumBytes(f, 1)
 
 	if formatCheck[0] == byte(0x41) {
@@ -270,7 +325,7 @@ func main() {
 	f.Seek(0, 0)
 	header := unpackHeader(f, hdrSize)
 
-	fmt.Printf("%s\n%s\n%s\n%s\nFilesize: %d\nDirectories: %d Files: %d\n", header.License, header.Name,
+	fmt.Printf("\n%s\n%s\n%s\n%s\n\tFilesize: %d\n\tDirectories: %d Files: %d\n\n", header.License, header.Name,
 		header.Version, header.Timestamp, header.FileSize, header.DirectoryCount, header.FileCount)
 
 	directory_list := unpackDirectoryList(f, int(header.DirectoryCount))
