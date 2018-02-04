@@ -38,14 +38,15 @@ type RGBA struct {
 }
 
 type BitmapHeader struct {
-	HeaderField uint16
-	Size        uint32
-	DataAddress uint32
-	DIBSize     uint32
-	Width       uint32
-	Height      uint32
-	ColPlanes   uint16
-	Bpp         uint16
+	HeaderField	uint16
+	Size		uint32
+	_		uint32
+	DataAddress	uint32
+	DIBSize		uint32
+	Width		uint32
+	Height		uint32
+	ColPlanes	uint16
+	Bpp		uint16
 	_           [24]byte
 }
 
