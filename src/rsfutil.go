@@ -303,12 +303,6 @@ func packFiles(p string) {
 		}
 		wd.Close()
 	}
-	//search dir for subdirs
-	//for every subdir:
-	//    add to dirlist
-	//    for every file in subdir:
-	//        add to fileList
-	//write file
 }
 
 func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal []*RGB) {
