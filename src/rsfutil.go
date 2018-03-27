@@ -97,7 +97,7 @@ type Header struct {
 
 type DirectoryInfo struct {
 	Name  [4]byte
-	Count uint16
+	Size uint16
 	Addr  uint16
 }
 
@@ -143,7 +143,7 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 	for _, dir := range dir_list {
 		if string(dir.Name[:3]) == "PAL" {
 			fmt.Printf("PAL directory found\n")
-			for _, file := range files[dir.Addr : dir.Addr+dir.Count] {
+			for _, file := range files[dir.Addr : dir.Addr+dir.Size] {
 				file_name := string(bytes.Trim(file.Name[:12], "x\000"))
 				if file_name == s {
 					fmt.Printf("Unpacking palette: %s\n", file_name)
@@ -167,7 +167,7 @@ func getPalette(f *os.File, dir_list []*DirectoryInfo, files []*FileInfo, s stri
 	return nil
 }
 
-//XOR each text character against its position.
+//XOR each text character against its position and swap terminal newline for null byte
 func textShift (t []byte, ti_s []TextInfo) []byte{
 	for i := 0; i < len(ti_s); i++ {
 		pos := 0
@@ -175,6 +175,7 @@ func textShift (t []byte, ti_s []TextInfo) []byte{
 			pos = ii + int(ti_s[i].Start)
 			t[pos] = t[pos] ^ byte(ii)
 		}
+		t[pos+1] = t[pos+1] ^ '\n'
 	}
 	return t
 }
@@ -191,27 +192,27 @@ func unpackHeader(f *os.File, hdrSize int) *Header {
 func packDirectoryList() {}
 
 func unpackDirectoryList(f *os.File, cnt int) []*DirectoryInfo {
-	dir_list := make([]*DirectoryInfo, cnt)
+	di_s := make([]*DirectoryInfo, cnt)
 	for i := 0; i < cnt; i++ {
-		dir := DirectoryInfo{}
-		err := binary.Read(getBuffer(f, 8), binary.LittleEndian, &dir)
+		di := DirectoryInfo{}
+		err := binary.Read(getBuffer(f, 8), binary.LittleEndian, &di)
 		check(err)
-		dir_list[i] = &dir
+		di_s[i] = &di
 	}
-	return dir_list
+	return di_s
 }
 
 func packFileList() {}
 
 func unpackFileList(f *os.File, cnt int) []*FileInfo {
-	file_list := make([]*FileInfo, cnt)
+	fi_s := make([]*FileInfo, cnt)
 	for i := 0; i < cnt; i++ {
-		file := FileInfo{}
-		err := binary.Read(getBuffer(f, 26), binary.LittleEndian, &file)
+		fi := FileInfo{}
+		err := binary.Read(getBuffer(f, 26), binary.LittleEndian, &fi)
 		check(err)
-		file_list[i] = &file
+		fi_s[i] = &fi
 	}
-	return file_list
+	return fi_s
 }
 
 func packFile() {}
@@ -224,23 +225,36 @@ func unpackFile(f *os.File, file *FileInfo) []byte {
 	return file_data
 }
 
-func packText(data [][]byte) TextHeader{
+func packText(data []byte) []byte {
 	lc := 0
+	idx := 0
+	ti_s := []TextInfo{}
+	buf := new(bytes.Buffer)
 	for i := 0; i < len(data); i++ {
-		for ii := 0; ii < len(data[i]); ii++ {
-			if data[i][ii] == '\n' {
-				data[i][ii] = '\x00'
-				lc += 1
+		if data[i] == '\n' {
+			lc += 1
+			ti := TextInfo{
+				Size: uint16(i - idx),
+				Start: uint32(idx),
 			}
+			idx = i
+			err := binary.Write(buf, binary.LittleEndian, &ti)
+			check(err)
+			ti_s = append(ti_s, ti)
 		}
 	}
+	tib_s := buf.Bytes()
 	th := TextHeader{
 		ID: uint16(0),
 		LineCount: uint16(lc),
 		EntryCount: uint16(len(data)),
 	}
-	//ti_s := []TextInfo{}
-	return th
+	err := binary.Write(buf, binary.LittleEndian, &th)
+	check(err)
+	thb_s := buf.Bytes()
+	data = append(tib_s, data...)
+	data = append(thb_s, data...)
+	return data
 }
 
 func unpackText(data []byte) []byte{
@@ -261,12 +275,68 @@ func unpackText(data []byte) []byte{
 
 	//XOR non-header data
 	data = textShift(data[idx + int(th.EntryCount * 8):], ti_s)
-	for i := 0; i < len(data); i++ {
-		if data[i] == '\x00' {
-			data[i] = '\n'
-		}
-	}
+
 	return data
+}
+
+func packBitmap(data []byte) []byte{
+	hdr := BitmapHeader{}
+	err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &hdr)
+	check(err)
+	//strip header data
+	data = data[1074:]
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, []uint16{uint16(hdr.Width), uint16(hdr.Height)})
+	data = append(buf.Bytes(), data...)
+
+	//remove padding somehow
+	return data
+}
+
+func unpackBitmap(data []byte, pal []*RGB) []byte{
+	var buf bytes.Buffer
+	dim := data[:4]
+	bmp_x := uint32(binary.LittleEndian.Uint16(dim[:2]))
+	bmp_y := uint32(binary.LittleEndian.Uint16(dim[2:]))
+	bmp_data := data[4:]
+	bmp_header := BitmapHeader{
+		HeaderField: 0x4d42,
+		Size:        uint32(0x43B + len(data)),
+		DataAddress: 0x43B,
+		DIBSize:     0x28,
+		Width:       bmp_x,
+		Height:      bmp_y,
+		ColPlanes:   0x1,
+		Bpp:         0x8,
+	}
+	//Some bitmaps are not 4-byte aligned, so we need to check and pad them manually
+	//row := int(bmp_x)
+	//rowPad := -(row%4 - 4)
+	//if rowPad != 4 {
+	//	bmp_data = bmp_data[rowPad:]
+	//	for i := rowPad; i < len(bmp_data); i += row + rowPad {
+	//		for ii := 0; ii < rowPad; ii++ {
+	//			bmp_data = insertByte(bmp_data, i-1, 0)
+	//		}
+	//	}
+	//}
+	binary.Write(&buf, binary.LittleEndian, bmp_header)
+
+	//PAL values are 0x00 - 0x3F so must be multiplied by 4
+	for i := 0; i < len(pal); i++ {
+		outpal_entry := RGBA{
+			r: pal[i].r * 4,
+			g: pal[i].g * 4,
+			b: pal[i].b * 4,
+	}
+	binary.Write(&buf, binary.LittleEndian, outpal_entry)
+	}
+
+	binary.Write(&buf, binary.LittleEndian, bmp_data)
+	bmp_file := make([]byte, buf.Len())
+	err := binary.Read(&buf, binary.LittleEndian, bmp_file)
+	check(err)
+	return bmp_file
 }
 
 func packFiles(p string) {
@@ -277,7 +347,10 @@ func packFiles(p string) {
 	wd.Close()
 	sort.Sort(ByModTime(d_s))
 
-	var obfs []byte
+	var ofbs []byte
+	var idx uint32
+	var di_s []DirectoryInfo
+	var fi_s []FileInfo
 	//var buf bytes.Buffer
 	fname := fmt.Sprintf(p + ".RSF")
 	fmt.Printf("Writing to file: %s\n", fname)
@@ -285,84 +358,120 @@ func packFiles(p string) {
 	check(err)
 	defer of.Close()
 
+	license := "ALL DATA IS COPYRIGHT 2000 GRIMOIRE SYSTEMS PTY LTD ALL RIGHTS RESERVED INTERNATIONALLY!"
+	version := "VB1.00"
+	timestamp := "Monday, Januadiffthisry 29, 2018 10:02:10 PM"
+	var of_l [100]byte
+	var of_n [12]byte
+	var of_v [8]byte
+	var of_t [42]byte
+	copy(of_l[:], license)
+	copy(of_n[:], fname)
+	copy(of_v[:], version)
+	copy(of_t[:], timestamp)
+	hdr := Header {
+		License: of_l,        //[100]byte
+		Name: of_n,           //[12]byte
+		Version: of_v,        //[8]byte
+		Timestamp: of_t,      //[42]byte
+		//FileSize:,       //uint32
+		//DirectoryCount:, //uint16
+		//FileCount:,      //uint16
+		Val1: 0x0008,
+		Val2: 0x001A,
+		Val3: 0x0006,
+		Val4: 0x1a64,
+		Val5: 0xa26b,
+	}
+
 	for _, d := range d_s {
 		wd, err := os.Open(p + string(os.PathSeparator) + d.Name())
 		check(err)
 		fmt.Printf("Reading directory: %s\n", d.Name())
 		f_s, _ := wd.Readdir(-1)
+		sort.Sort(ByModTime(f_s))
+		var dn [4]byte
+		copy(dn[:], d.Name()[:3])
+		di := DirectoryInfo{
+			Name: dn,
+			Size: uint16(len(f_s)),
+			Addr: uint16(len(fi_s)),
+		}
+		di_s = append(di_s, di)
 		for _, f := range f_s {
-			fmt.Printf("\t%s\n", f.Name())
 			file, err := os.Open(p + string(os.PathSeparator) + d.Name() + string(os.PathSeparator) + f.Name())
 			check(err)
-			err = binary.Read(file, binary.LittleEndian, obfs)
+			fs, err := file.Stat()
 			check(err)
-			_, err = of.Write(obfs)
-			check(err)
-			of.Sync()
+
+			fn := f.Name()[:len(f.Name())-4]
+			ft := f.Name()[len(f.Name())-4:]
+			var n [12]byte
+			copy(n[:], fn + ft)
+
+			fi := FileInfo{
+				Name: n,
+				StartAddr: idx,
+			}
+
+			fmt.Printf("\t%s\n", fn + ft)
+			obs := readNumBytes(file, int(fs.Size()))
+			switch ft {
+			case ".BMP":
+				fi.ID = 0x200
+				obs = packBitmap(obs)
+			case ".TXT":
+				fi.ID = 0x1000
+				 obs = packText(obs)
+			default:
+				packFile()
+			}
+
+			fi.Size = uint32(len(obs))
+			fi.EndAddr = idx + fi.Size
+
+			ofbs = append(ofbs, obs...)
+			fi_s = append(fi_s, fi)
+			idx = fi.EndAddr
 			file.Close()
 		}
 		wd.Close()
 	}
+
+	//Bundle header/dirinfo/fileinfo into binary, append to data.
+	hdr.FileSize = idx + uint32(binary.Size(hdr))
+	hdr.FileCount = uint16(len(fi_s))
+	hdr.DirectoryCount = uint16(len(di_s))
+
+	var buf bytes.Buffer
+	binary.Write(&buf, binary.LittleEndian, hdr)
+	binary.Write(&buf, binary.LittleEndian, di_s)
+	binary.Write(&buf, binary.LittleEndian, fi_s)
+
+	hb_s := buf.Bytes()
+	ofbs = append(hb_s, ofbs...)
+	_, err = of.Write(ofbs)
+	check(err)
+	of.Sync()
 }
 
 func unpackFiles(f *os.File, hdr *Header, dir_list []*DirectoryInfo, files []*FileInfo, pal []*RGB) {
-	var buf bytes.Buffer
 	fmt.Printf("Extracting to:\n")
 	for _, dir := range dir_list {
 		work_dir := fmt.Sprintf("./%s/%s/", bytes.Trim(hdr.Name[:8], "x\000"), dir.Name[:3])
 		fmt.Printf("\t%s\n", work_dir)
 		os.MkdirAll(work_dir, os.ModePerm)
 
-		for _, file := range files[dir.Addr : dir.Count+dir.Addr] {
+		for _, file := range files[dir.Addr : dir.Size+dir.Addr] {
 			s := work_dir + string(bytes.Trim(file.Name[:12], "x\000"))
 			out, err := os.Create(s)
 			check(err)
 			out_data := unpackFile(f, file)
 			switch file.ID {
-			case 0x200: //Bitmap
-				dim := out_data[:4]
-				bmp_x := uint32(binary.LittleEndian.Uint16(dim[:2]))
-				bmp_y := uint32(binary.LittleEndian.Uint16(dim[2:]))
-				bmp_data := out_data[4:]
-				bmp_header := BitmapHeader{
-					HeaderField: 0x4d42,
-					Size:        uint32(0x43B + file.Size),
-					DataAddress: 0x43B,
-					DIBSize:     0x28,
-					Width:       bmp_x,
-					Height:      bmp_y,
-					ColPlanes:   0x1,
-					Bpp:         0x8,
-				}
-				//Some bitmaps are not 4-byte aligned, so we need to check and pad them manually
-				row := int(bmp_x)
-				rowPad := -(row%4 - 4)
-				if rowPad != 4 {
-					bmp_data = bmp_data[rowPad:]
-					for i := rowPad; i < len(bmp_data); i += row + rowPad {
-						for ii := 0; ii < rowPad; ii++ {
-							bmp_data = insertByte(bmp_data, i-1, 0)
-						}
-					}
-				}
-				binary.Write(&buf, binary.LittleEndian, bmp_header)
-
-				//PAL values are 0x00 - 0x3F so must be multiplied by 4
-				for i := 0; i < len(pal); i++ {
-					outpal_entry := RGBA{
-						r: pal[i].r * 4,
-						g: pal[i].g * 4,
-						b: pal[i].b * 4,
-					}
-					binary.Write(&buf, binary.LittleEndian, outpal_entry)
-				}
-				binary.Write(&buf, binary.LittleEndian, bmp_data)
-				bmp_file := make([]byte, buf.Len())
-				err = binary.Read(&buf, binary.LittleEndian, bmp_file)
+			case 0x200: //BMP file
+				out_data := unpackBitmap(out_data, pal)
+				_, err = out.Write(out_data)
 				check(err)
-				_, err = out.Write(bmp_file)
-				check(err)
-
 			case 0x1000: //TXT file
 				out_data := unpackText(out_data)
 				_, err = out.Write(out_data)
@@ -384,7 +493,7 @@ var xFlag, cFlag string
 
 func init() {
 	flag.StringVar(&xFlag, "x", "", "Extract the provided `archive`")
-	//flag.StringVar(&cFlag, "c", "", "Create an .RSF from provided `directory`")
+	flag.StringVar(&cFlag, "c", "", "Create an .RSF from provided `directory`")
 }
 
 func main() {
@@ -419,11 +528,9 @@ func main() {
 		//l23_pal := getPalette(f, header, format_list, file_list, "L23.PAL")
 		unpackFiles(f, header, directory_list, file_list, rgb_pal)
 
+	} else if cFlag != "" {
+		packFiles(cFlag)
 	} else {
 		flag.Usage()
 	}
-
-	//if cFlag != "" {
-	//	packFiles(cFlag)
-	//}
 }
